@@ -1,0 +1,8 @@
+{
+  "name": "Botiquín & Medicinas Inteligente - Inventario Visual",
+  "description": "Organizador e inventario visual de cajas de medicinas, botiquines de viaje y hogar con reconocimiento fotográfico por IA.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
