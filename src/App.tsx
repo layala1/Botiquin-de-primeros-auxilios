@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { MedicineBox, MedicineItem, AIAnalysisResultItem, ItemCategory } from './types';
 import {
   getStoredBoxes,
@@ -7,6 +7,8 @@ import {
   saveStoredItems,
   checkExpiryStatus,
   isItemOutOfStock,
+  loadPersistentData,
+  isValidPhotoDataUrl,
 } from './services/storage';
 import { Header } from './components/Header';
 import { BoxManagerModal } from './components/BoxManagerModal';
@@ -39,6 +41,8 @@ import {
   ShoppingCart,
   Copy,
   Check,
+  Trash2,
+  Edit2,
 } from 'lucide-react';
 
 export default function App() {
@@ -68,19 +72,47 @@ export default function App() {
   const [editingPhotos, setEditingPhotos] = useState<string[]>([]);
   const [editingConfidenceNote, setEditingConfidenceNote] = useState<string | undefined>(undefined);
 
+  // Active box in delete confirmation / editing
+  const [boxToDelete, setBoxToDelete] = useState<MedicineBox | null>(null);
+  const [boxToEdit, setBoxToEdit] = useState<MedicineBox | null>(null);
+
   // Sub-filter for Alertas tab ('all' | 'stock' | 'expiry')
   const [alertsSubTab, setAlertsSubTab] = useState<'all' | 'stock' | 'expiry'>('all');
   const [copiedShoppingList, setCopiedShoppingList] = useState(false);
   const [toastMessage, setToastMessage] = useState<{ text: string; type: 'stock' | 'restored' | 'info' } | null>(null);
 
-  // Sync to localStorage
+  // Guard to prevent premature write back to storage before hydration from IndexedDB completes
+  const isHydratedRef = useRef(false);
+
+  // Sync to IndexedDB and localStorage (only after persistent data has hydrated)
   useEffect(() => {
+    if (!isHydratedRef.current) return;
     saveStoredBoxes(boxes);
   }, [boxes]);
 
   useEffect(() => {
+    if (!isHydratedRef.current) return;
     saveStoredItems(items);
   }, [items]);
+
+  // Load persistent data from IndexedDB & Photo Vault on startup
+  useEffect(() => {
+    let isMounted = true;
+    loadPersistentData().then(({ boxes: persistentBoxes, items: persistentItems }) => {
+      if (!isMounted) return;
+      if (persistentBoxes && persistentBoxes.length > 0) {
+        setBoxes(persistentBoxes);
+      }
+      if (persistentItems && persistentItems.length > 0) {
+        setItems(persistentItems);
+        console.log(`[Hydration] Successfully loaded ${persistentItems.length} persistent items with photos.`);
+      }
+      isHydratedRef.current = true;
+    });
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   // Overall counts: Out of Stock (Volver a comprar) & Expiry
   const outOfStockItems = useMemo(
@@ -146,33 +178,118 @@ export default function App() {
     setActiveBoxId(newBox.id);
   };
 
-  // Handler: Box Deleted
+  // Handler: Box Deleted - NEVER delete medicines! Move them to remaining box safely!
   const handleDeleteBox = (boxId: string) => {
-    setBoxes((prev) => prev.filter((b) => b.id !== boxId));
-    // Also delete or reassign items
-    setItems((prev) => prev.filter((i) => i.boxId !== boxId));
+    const deletedBox = boxes.find((b) => b.id === boxId);
+    const remaining = boxes.filter((b) => b.id !== boxId);
+
+    // If deleting the last box, provide a default "Botiquín General" so items always have a valid box
+    let fallbackBoxId = remaining[0]?.id;
+    let finalBoxes = remaining;
+
+    if (remaining.length === 0) {
+      const defaultBox: MedicineBox = {
+        id: 'box-general',
+        name: 'Botiquín General',
+        description: 'Caja principal',
+        icon: '📦',
+        color: 'teal',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      finalBoxes = [defaultBox];
+      fallbackBoxId = defaultBox.id;
+    }
+
+    setBoxes(finalBoxes);
+    saveStoredBoxes(finalBoxes);
+
+    // Reassign items from deleted box so medicines are NEVER lost
+    setItems((prev) => {
+      let movedCount = 0;
+      const updated = prev.map((i) => {
+        if (i.boxId === boxId) {
+          movedCount++;
+          return { ...i, boxId: fallbackBoxId, updatedAt: new Date().toISOString() };
+        }
+        return i;
+      });
+      console.log(`[handleDeleteBox] Box ${boxId} deleted. Reassigned ${movedCount} items to ${fallbackBoxId}. Total items: ${updated.length}`);
+      saveStoredItems(updated);
+      return updated;
+    });
+
     if (activeBoxId === boxId) {
       setActiveBoxId('all');
     }
+
+    const boxName = deletedBox?.name || 'Caja';
+    setToastMessage({
+      text: `🗑️ Caja "${boxName}" eliminada. Tus medicamentos se mantuvieron a salvo.`,
+      type: 'info',
+    });
+    setTimeout(() => setToastMessage(null), 3500);
   };
 
-  // Handler: Item Saved (Create / Update)
+  // Handler: Item Saved (Create / Update) with robust race condition checks & logging
   const handleSaveItem = (item: MedicineItem) => {
     const normalizedItem: MedicineItem = {
       ...item,
+      id: item.id || `item-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
       isOutOfStock: isItemOutOfStock(item),
     };
+
+    let savedItemForDetail = normalizedItem;
+
     setItems((prev) => {
-      const exists = prev.some((i) => i.id === normalizedItem.id);
-      const next = exists
-        ? prev.map((i) => (i.id === normalizedItem.id ? normalizedItem : i))
-        : [normalizedItem, ...prev];
-      saveStoredItems(next);
-      return next;
+      const currentList = Array.isArray(prev) ? prev : [];
+      const prevCount = currentList.length;
+
+      const existsIndex = currentList.findIndex((i) => i.id === normalizedItem.id);
+      let nextList: MedicineItem[];
+
+      if (existsIndex >= 0) {
+        const existing = currentList[existsIndex];
+        // Protect existing photos if edit form lacked photo
+        const photoUrl = isValidPhotoDataUrl(normalizedItem.photoUrl)
+          ? normalizedItem.photoUrl
+          : isValidPhotoDataUrl(existing.photoUrl)
+          ? existing.photoUrl
+          : undefined;
+
+        const photoUrls =
+          normalizedItem.photoUrls && normalizedItem.photoUrls.length > 0
+            ? normalizedItem.photoUrls
+            : existing.photoUrls;
+
+        const merged: MedicineItem = {
+          ...existing,
+          ...normalizedItem,
+          photoUrl,
+          photoUrls,
+        };
+        savedItemForDetail = merged;
+
+        nextList = currentList.map((i, idx) => (idx === existsIndex ? merged : i));
+        console.log(`[handleSaveItem] Updated item ${normalizedItem.id} (${normalizedItem.name}). Items count: ${nextList.length}`);
+      } else {
+        // Prepend new item
+        nextList = [normalizedItem, ...currentList];
+        console.log(`[handleSaveItem] Added new item ${normalizedItem.id} (${normalizedItem.name}). Items count: ${nextList.length} (was ${prevCount})`);
+      }
+
+      // Strict safeguard: Ensure state size never unexpectedly drops during save
+      if (nextList.length < prevCount) {
+        console.error(`[handleSaveItem] State reduction anomaly detected! (${nextList.length} < ${prevCount}). Aborting reduction.`);
+        return currentList;
+      }
+
+      saveStoredItems(nextList);
+      return nextList;
     });
 
     if (detailItem && detailItem.id === normalizedItem.id) {
-      setDetailItem(normalizedItem);
+      setDetailItem(savedItemForDetail);
     }
   };
 
@@ -187,7 +304,7 @@ export default function App() {
     setDetailItem(null);
   };
 
-  // Handler: Move Item between Boxes
+  // Handler: Move Item between Boxes (change box)
   const handleMoveBox = (itemId: string, newBoxId: string) => {
     setItems((prev) => {
       const next = prev.map((i) =>
@@ -199,6 +316,31 @@ export default function App() {
     if (detailItem && detailItem.id === itemId) {
       setDetailItem((prev) => (prev ? { ...prev, boxId: newBoxId } : null));
     }
+  };
+
+  // Handler: Duplicate / Copy Item to Another Box (have in both boxes simultaneously)
+  const handleDuplicateItem = (itemId: string, targetBoxId: string) => {
+    const sourceItem = items.find((i) => i.id === itemId);
+    const targetBox = boxes.find((b) => b.id === targetBoxId);
+    if (!sourceItem || !targetBox) return;
+
+    const duplicatedItem: MedicineItem = {
+      ...sourceItem,
+      id: `item-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+      boxId: targetBoxId,
+      isOutOfStock: false,
+      outOfStockDate: undefined,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    handleSaveItem(duplicatedItem);
+
+    setToastMessage({
+      text: `📋 "${sourceItem.name}" copiado a "${targetBox.name}". Ahora lo tienes en ambas cajas al mismo tiempo.`,
+      type: 'info',
+    });
+    setTimeout(() => setToastMessage(null), 4000);
   };
 
   // Handler: Toggle Out of Stock (Se agotó / Volver a comprar)
@@ -608,14 +750,37 @@ export default function App() {
                   >
                     <div>
                       <div className="flex items-start justify-between gap-2">
-                        <div className="flex items-center gap-3">
-                          <div className="w-12 h-12 rounded-2xl bg-teal-50 border border-teal-100 flex items-center justify-center text-2xl shadow-2xs">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="w-12 h-12 rounded-2xl bg-teal-50 border border-teal-100 flex items-center justify-center text-2xl shadow-2xs shrink-0">
                             {box.icon || '📦'}
                           </div>
-                          <div>
-                            <h3 className="font-bold text-sm text-gray-900">{box.name}</h3>
-                            <p className="text-xs text-gray-500 line-clamp-1">{box.description}</p>
+                          <div className="min-w-0">
+                            <h3 className="font-bold text-sm text-gray-900 truncate">{box.name}</h3>
+                            <p className="text-xs text-gray-500 line-clamp-1">{box.description || 'Sin descripción'}</p>
                           </div>
+                        </div>
+
+                        {/* Botones de acción directa: Editar y Eliminar Caja */}
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            onClick={() => {
+                              setBoxToEdit(box);
+                              setIsBoxManagerOpen(true);
+                            }}
+                            className="p-1.5 text-gray-400 hover:text-teal-700 hover:bg-teal-50 rounded-lg transition-colors"
+                            title="Editar caja"
+                            aria-label="Editar caja"
+                          >
+                            <Edit2 className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => setBoxToDelete(box)}
+                            className="p-1.5 text-gray-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
+                            title="Eliminar caja"
+                            aria-label="Eliminar caja"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
                         </div>
                       </div>
 
@@ -1000,16 +1165,90 @@ export default function App() {
       {/* Modals */}
       <BoxManagerModal
         isOpen={isBoxManagerOpen}
-        onClose={() => setIsBoxManagerOpen(false)}
+        onClose={() => {
+          setIsBoxManagerOpen(false);
+          setBoxToEdit(null);
+        }}
         boxes={boxes}
         items={items}
         onSaveBox={handleSaveBox}
         onDeleteBox={handleDeleteBox}
+        initialEditBox={boxToEdit}
         onSelectBox={(id) => {
           setActiveBoxId(id);
           setActiveTab('inventario');
         }}
       />
+
+      {/* Modal de confirmación para eliminar caja */}
+      {boxToDelete && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150">
+          <div className="bg-white w-full max-w-sm rounded-2xl shadow-2xl p-5 border border-rose-100 space-y-4">
+            <div className="w-12 h-12 rounded-2xl bg-rose-50 border border-rose-100 text-rose-600 flex items-center justify-center mx-auto text-2xl">
+              <Trash2 className="w-6 h-6" />
+            </div>
+
+            <div className="text-center">
+              <h3 className="text-base font-bold text-gray-900">¿Eliminar esta caja?</h3>
+              <p className="text-xs text-gray-600 mt-1">
+                ¿Estás seguro de que deseas eliminar la caja{' '}
+                <strong className="text-gray-900">
+                  {boxToDelete.icon} {boxToDelete.name}
+                </strong>
+                ?
+              </p>
+            </div>
+
+            {(() => {
+              const count = items.filter((i) => i.boxId === boxToDelete.id).length;
+              const remainingBox = boxes.find((b) => b.id !== boxToDelete.id);
+              const destinationText = remainingBox ? `a "${remainingBox.name}"` : 'a un botiquín principal';
+              return (
+                <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 space-y-1.5">
+                  <p className="font-bold flex items-center gap-1.5 text-amber-800">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                    <span>
+                      {count > 0
+                        ? `Contiene ${count} medicamento${count === 1 ? '' : 's'} o insumos`
+                        : 'Esta caja está actualmente vacía'}
+                    </span>
+                  </p>
+                  <p className="text-[11px] text-amber-700 leading-relaxed">
+                    {count > 0 ? (
+                      <>
+                        Tus medicamentos <strong>NO se borrarán</strong>. Se trasladarán automáticamente {destinationText} para proteger tus datos y fotos.
+                      </>
+                    ) : (
+                      'Se eliminará la caja sin alterar tus demás cajas ni registros.'
+                    )}
+                  </p>
+                </div>
+              );
+            })()}
+
+            <div className="flex gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setBoxToDelete(null)}
+                className="flex-1 py-2.5 px-3 rounded-xl border border-gray-300 text-gray-700 text-xs font-semibold hover:bg-gray-100 transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  handleDeleteBox(boxToDelete.id);
+                  setBoxToDelete(null);
+                }}
+                className="flex-1 py-2.5 px-3 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition-colors shadow-sm flex items-center justify-center gap-1.5"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>Sí, eliminar caja</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <CameraScannerModal
         isOpen={isCameraOpen}
@@ -1055,6 +1294,8 @@ export default function App() {
         }}
         onDelete={handleDeleteItem}
         onMoveBox={handleMoveBox}
+        onDuplicateBox={handleDuplicateItem}
+        allItems={items}
         onToggleOutOfStock={handleToggleOutOfStock}
       />
 

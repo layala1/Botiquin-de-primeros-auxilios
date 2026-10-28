@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { MedicineItem, MedicineBox } from '../types';
-import { checkExpiryStatus, isItemOutOfStock } from '../services/storage';
+import { checkExpiryStatus, isItemOutOfStock, isValidPhotoDataUrl } from '../services/storage';
 import {
   X,
   Edit2,
@@ -17,16 +17,20 @@ import {
   Building2,
   ShoppingCart,
   Check,
+  Copy,
+  Layers,
 } from 'lucide-react';
 
 interface ItemDetailModalProps {
   isOpen?: boolean;
   item: MedicineItem | null;
   boxes: MedicineBox[];
+  allItems?: MedicineItem[];
   onClose: () => void;
   onEdit: (item: MedicineItem) => void;
   onDelete: (itemId: string) => void;
   onMoveBox: (itemId: string, newBoxId: string) => void;
+  onDuplicateBox?: (itemId: string, targetBoxId: string) => void;
   onToggleOutOfStock?: (itemId: string, isOutOfStock: boolean) => void;
 }
 
@@ -34,13 +38,16 @@ export const ItemDetailModal: React.FC<ItemDetailModalProps> = ({
   isOpen = true,
   item,
   boxes,
+  allItems,
   onClose,
   onEdit,
   onDelete,
   onMoveBox,
+  onDuplicateBox,
   onToggleOutOfStock,
 }) => {
   const [showMoveDropdown, setShowMoveDropdown] = useState(false);
+  const [showCopyDropdown, setShowCopyDropdown] = useState(false);
   const [activePhotoIndex, setActivePhotoIndex] = useState(0);
   const [zoomedPhoto, setZoomedPhoto] = useState<string | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -55,10 +62,23 @@ export const ItemDetailModal: React.FC<ItemDetailModalProps> = ({
   // Collect all photos
   const allPhotos: string[] = [];
   if (item.photoUrls && item.photoUrls.length > 0) {
-    allPhotos.push(...item.photoUrls);
-  } else if (item.photoUrl) {
+    allPhotos.push(...item.photoUrls.filter(isValidPhotoDataUrl));
+  } else if (isValidPhotoDataUrl(item.photoUrl)) {
     allPhotos.push(item.photoUrl);
   }
+
+  // Find other boxes where this same medicine is also stored
+  const siblingItems = allItems
+    ? allItems.filter(
+        (other) =>
+          other.id !== item.id &&
+          other.boxId !== item.boxId &&
+          (other.name.toLowerCase().trim() === item.name.toLowerCase().trim() ||
+            (item.activeIngredient &&
+              other.activeIngredient &&
+              other.activeIngredient.toLowerCase().trim() === item.activeIngredient.toLowerCase().trim()))
+      )
+    : [];
 
   const handleToggleStock = () => {
     const nextStatus = !isOutOfStock;
@@ -132,6 +152,47 @@ export const ItemDetailModal: React.FC<ItemDetailModalProps> = ({
             </div>
           )}
 
+          {/* Sibling Items Banner: Present also in other boxes */}
+          {siblingItems.length > 0 && (
+            <div className="p-3 bg-blue-50/70 border border-blue-200 rounded-2xl space-y-2">
+              <span className="text-[11px] font-bold text-blue-900 flex items-center gap-1.5 uppercase tracking-wider">
+                <Layers className="w-3.5 h-3.5 text-blue-700" />
+                <span>Disponible también en otras cajas ({siblingItems.length}):</span>
+              </span>
+              <div className="flex flex-wrap gap-1.5">
+                {siblingItems.map((s) => {
+                  const b = boxes.find((box) => box.id === s.boxId);
+                  return (
+                    <div
+                      key={s.id}
+                      className="text-xs bg-white border border-blue-200 text-blue-950 font-semibold px-2.5 py-1.5 rounded-xl flex items-center gap-2 shadow-2xs"
+                    >
+                      <span className="text-sm">{b?.icon || '📦'}</span>
+                      <div>
+                        <div className="flex items-center gap-1">
+                          <span className="font-bold">{b?.name || 'Otra caja'}</span>
+                          <span className="text-[10px] text-gray-500 font-normal">· {s.quantity}</span>
+                        </div>
+                        {s.expirationDate && (
+                          <span className="text-[10px] text-gray-500 block">Vence: {s.expirationDate}</span>
+                        )}
+                      </div>
+                      {s.isOutOfStock ? (
+                        <span className="text-[9px] bg-rose-100 text-rose-800 font-bold px-1.5 py-0.5 rounded-full border border-rose-200">
+                          Agotado
+                        </span>
+                      ) : (
+                        <span className="text-[9px] bg-emerald-100 text-emerald-800 font-bold px-1.5 py-0.5 rounded-full border border-emerald-200">
+                          En stock
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {/* Photos Carousel / Display */}
           {allPhotos.length > 0 ? (
             <div className="space-y-2">
@@ -176,7 +237,17 @@ export const ItemDetailModal: React.FC<ItemDetailModalProps> = ({
                 </div>
               )}
             </div>
-          ) : null}
+          ) : (
+            <div className="p-3 bg-gray-50 border border-dashed border-gray-200 rounded-2xl flex items-center justify-between gap-2">
+              <span className="text-xs text-gray-500">Sin foto registrada para este artículo.</span>
+              <button
+                onClick={() => onEdit(item)}
+                className="text-xs font-bold text-teal-700 hover:text-teal-900 bg-teal-100 hover:bg-teal-200 px-3 py-1.5 rounded-xl transition-colors shrink-0"
+              >
+                + Añadir Foto
+              </button>
+            </div>
+          )}
 
           {/* Titles & Classifications */}
           <div>
@@ -355,50 +426,120 @@ export const ItemDetailModal: React.FC<ItemDetailModalProps> = ({
             </div>
           )}
 
-          {/* Move to another Box Section */}
-          <div className="pt-2 border-t border-gray-100">
-            {showMoveDropdown ? (
-              <div className="p-3 bg-gray-50 rounded-2xl border border-gray-200 space-y-2">
-                <span className="text-xs font-bold text-gray-700 block">
-                  Selecciona la caja de destino:
-                </span>
-                <div className="space-y-1.5">
-                  {boxes
-                    .filter((b) => b.id !== item.boxId)
-                    .map((b) => (
-                      <button
-                        key={b.id}
-                        onClick={() => {
-                          onMoveBox(item.id, b.id);
-                          setShowMoveDropdown(false);
-                        }}
-                        className="w-full text-left p-2.5 bg-white border border-gray-200 hover:border-teal-500 rounded-xl flex items-center justify-between text-xs font-semibold text-gray-800 transition-colors"
-                      >
-                        <span className="flex items-center gap-2">
-                          <span className="text-base">{b.icon}</span>
-                          <span>{b.name}</span>
-                        </span>
-                        <span className="text-teal-600 font-bold">Mover aquí →</span>
-                      </button>
-                    ))}
-                </div>
+          {/* Dual Organization Actions: Copy to another box OR Move to another box */}
+          {boxes.length > 1 && (
+            <div className="pt-2 border-t border-gray-100 space-y-2">
+              <span className="text-[11px] font-bold text-gray-500 uppercase tracking-wider block">
+                Tener en tus Cajas y Botiquines
+              </span>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <button
-                  onClick={() => setShowMoveDropdown(false)}
-                  className="w-full py-1 text-center text-xs text-gray-500 hover:text-gray-700"
+                  type="button"
+                  onClick={() => {
+                    setShowCopyDropdown((prev) => !prev);
+                    setShowMoveDropdown(false);
+                  }}
+                  className="py-2.5 px-3 rounded-xl bg-teal-50 hover:bg-teal-100 border border-teal-200 text-teal-900 font-bold text-xs flex items-center justify-center gap-1.5 transition-colors shadow-2xs"
                 >
-                  Cancelar
+                  <Copy className="w-3.5 h-3.5 text-teal-700" />
+                  <span>Tener también en otra caja</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowMoveDropdown((prev) => !prev);
+                    setShowCopyDropdown(false);
+                  }}
+                  className="py-2.5 px-3 rounded-xl bg-gray-50 hover:bg-gray-100 border border-gray-200 text-gray-700 font-semibold text-xs flex items-center justify-center gap-1.5 transition-colors"
+                >
+                  <ArrowRightLeft className="w-3.5 h-3.5 text-gray-500" />
+                  <span>Mover (cambiar de caja)</span>
                 </button>
               </div>
-            ) : (
-              <button
-                onClick={() => setShowMoveDropdown(true)}
-                className="w-full py-2.5 px-3 rounded-xl border border-dashed border-teal-300 text-teal-700 hover:bg-teal-50 font-semibold text-xs flex items-center justify-center gap-2 transition-colors"
-              >
-                <ArrowRightLeft className="w-4 h-4" />
-                <span>Mover este artículo a otra caja (ej: Casa ↔ Viaje)</span>
-              </button>
-            )}
-          </div>
+
+              {/* Copy Dropdown: Duplicate item to another box while preserving photos and formula */}
+              {showCopyDropdown && (
+                <div className="p-3 bg-teal-50/80 rounded-2xl border border-teal-300 space-y-2 animate-in fade-in">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-teal-950 flex items-center gap-1.5">
+                      <Copy className="w-3.5 h-3.5 text-teal-700" />
+                      <span>¿A qué caja deseas copiar esta medicina?</span>
+                    </span>
+                    <span className="text-[10px] text-teal-700 font-medium">Mantendrá fotos y datos</span>
+                  </div>
+                  <div className="space-y-1.5">
+                    {boxes
+                      .filter((b) => b.id !== item.boxId)
+                      .map((b) => (
+                        <button
+                          key={b.id}
+                          type="button"
+                          onClick={() => {
+                            onDuplicateBox?.(item.id, b.id);
+                            setShowCopyDropdown(false);
+                          }}
+                          className="w-full text-left p-2.5 bg-white border border-teal-200 hover:border-teal-500 rounded-xl flex items-center justify-between text-xs font-semibold text-gray-800 transition-colors shadow-2xs"
+                        >
+                          <span className="flex items-center gap-2">
+                            <span className="text-base">{b.icon}</span>
+                            <span>{b.name}</span>
+                          </span>
+                          <span className="text-teal-700 font-bold bg-teal-50 px-2 py-0.5 rounded-lg border border-teal-200 text-xs">
+                            + Copiar a esta caja
+                          </span>
+                        </button>
+                      ))}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowCopyDropdown(false)}
+                    className="w-full py-1 text-center text-xs text-gray-500 hover:text-gray-700"
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              )}
+
+              {/* Move Dropdown: Change box (remove from current) */}
+              {showMoveDropdown && (
+                <div className="p-3 bg-gray-50 rounded-2xl border border-gray-200 space-y-2 animate-in fade-in">
+                  <span className="text-xs font-bold text-gray-700 block">
+                    Selecciona a qué caja deseas moverla (se quitará de {currentBox?.name || 'esta caja'}):
+                  </span>
+                  <div className="space-y-1.5">
+                    {boxes
+                      .filter((b) => b.id !== item.boxId)
+                      .map((b) => (
+                        <button
+                          key={b.id}
+                          type="button"
+                          onClick={() => {
+                            onMoveBox(item.id, b.id);
+                            setShowMoveDropdown(false);
+                          }}
+                          className="w-full text-left p-2.5 bg-white border border-gray-200 hover:border-teal-500 rounded-xl flex items-center justify-between text-xs font-semibold text-gray-800 transition-colors"
+                        >
+                          <span className="flex items-center gap-2">
+                            <span className="text-base">{b.icon}</span>
+                            <span>{b.name}</span>
+                          </span>
+                          <span className="text-teal-600 font-bold">Mover aquí →</span>
+                        </button>
+                      ))}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowMoveDropdown(false)}
+                    className="w-full py-1 text-center text-xs text-gray-500 hover:text-gray-700"
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Photo Full Zoom */}

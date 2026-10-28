@@ -4,7 +4,10 @@ import {
   getAllItemsFromIDB,
   saveAllBoxesToIDB,
   saveAllItemsToIDB,
+  isValidPhotoDataUrl,
 } from './idb';
+
+export { isValidPhotoDataUrl };
 
 const BOXES_STORAGE_KEY = 'medibox_cajas_v1';
 const ITEMS_STORAGE_KEY = 'medibox_items_v1';
@@ -47,14 +50,22 @@ export function saveStoredBoxes(boxes: MedicineBox[]): void {
 
 /**
  * Synchronous read from localStorage for instant initial paint.
- * NEVER destroys or overwrites existing user data.
+ * Sanitizes any invalid or legacy truncated photo strings.
  */
 export function getStoredItems(): MedicineItem[] {
   try {
     const data = localStorage.getItem(ITEMS_STORAGE_KEY);
     if (!data) return [];
     const parsed = JSON.parse(data);
-    return Array.isArray(parsed) ? parsed : [];
+    if (!Array.isArray(parsed)) return [];
+
+    return parsed.map((item: MedicineItem) => ({
+      ...item,
+      photoUrl: isValidPhotoDataUrl(item.photoUrl) ? item.photoUrl : undefined,
+      photoUrls: Array.isArray(item.photoUrls)
+        ? item.photoUrls.filter(isValidPhotoDataUrl)
+        : undefined,
+    }));
   } catch (e) {
     console.warn('Error reading items from localStorage', e);
     return [];
@@ -62,11 +73,14 @@ export function getStoredItems(): MedicineItem[] {
 }
 
 /**
- * Saves items safely to both IndexedDB (full data + full photos, no quota limit)
- * and localStorage (compressed/lightweight fallback).
+ * Saves items safely to both IndexedDB (full data + full photos in vault, no quota limit)
+ * and localStorage (clean fallback cache).
+ * NEVER chops or truncates photo URLs.
  */
 export function saveStoredItems(items: MedicineItem[]): void {
-  // 1. Primary storage: IndexedDB (has gigabytes of storage, never drops items)
+  if (!Array.isArray(items)) return;
+
+  // 1. Primary storage: IndexedDB (has gigabytes of storage, never drops items or photos)
   saveAllItemsToIDB(items).catch((err) => {
     console.error('IndexedDB save failed for items:', err);
   });
@@ -75,24 +89,24 @@ export function saveStoredItems(items: MedicineItem[]): void {
   try {
     localStorage.setItem(ITEMS_STORAGE_KEY, JSON.stringify(items));
   } catch (quotaError) {
-    console.warn('localStorage quota exceeded. Saving lightweight cache to localStorage while IndexedDB retains full photos.');
-    // If full base64 images exceed 5MB quota, save lightweight version in localStorage (IndexedDB has the full photos!)
+    // If full base64 images exceed 5MB quota, save clean lightweight version in localStorage.
+    // IndexedDB & Photo Vault retain 100% of all full photos permanently.
     try {
-      const lightweightItems = items.map((i) => ({
+      const cleanItems = items.map((i) => ({
         ...i,
-        photoUrl: i.photoUrl ? (i.photoUrl.length > 50000 ? i.photoUrl.slice(0, 200) + '...' : i.photoUrl) : undefined,
+        photoUrl: undefined,
         photoUrls: undefined,
       }));
-      localStorage.setItem(ITEMS_STORAGE_KEY, JSON.stringify(lightweightItems));
+      localStorage.setItem(ITEMS_STORAGE_KEY, JSON.stringify(cleanItems));
     } catch (fallbackErr) {
-      console.error('Could not save to localStorage, relying on IndexedDB:', fallbackErr);
+      console.warn('localStorage quota exceeded completely, relying on IndexedDB:', fallbackErr);
     }
   }
 }
 
 /**
  * Loads the complete, persistent database from IndexedDB on startup.
- * Automatically migrates existing localStorage data to IndexedDB if needed.
+ * Automatically reconciles with the Photo Vault to ensure NO photos are ever missing.
  */
 export async function loadPersistentData(): Promise<{
   boxes: MedicineBox[];
@@ -107,7 +121,7 @@ export async function loadPersistentData(): Promise<{
     const localBoxes = getStoredBoxes();
     const localItems = getStoredItems();
 
-    // If IndexedDB is empty but localStorage has items, migrate localStorage -> IndexedDB
+    // If IndexedDB is empty but localStorage has data, seed IndexedDB
     if (idbBoxes.length === 0 && localBoxes.length > 0) {
       idbBoxes = localBoxes;
       await saveAllBoxesToIDB(localBoxes);
@@ -117,23 +131,45 @@ export async function loadPersistentData(): Promise<{
       await saveAllItemsToIDB(localItems);
     }
 
-    // If IndexedDB has items, make sure we use whichever has the higher count (or merge by ID)
+    // Merge boxes by ID
     const mergedBoxesMap = new Map<string, MedicineBox>();
     for (const b of localBoxes) mergedBoxesMap.set(b.id, b);
     for (const b of idbBoxes) mergedBoxesMap.set(b.id, b);
     const finalBoxes = Array.from(mergedBoxesMap.values());
 
+    // Merge items by ID, strictly protecting valid photos
     const mergedItemsMap = new Map<string, MedicineItem>();
-    for (const item of localItems) mergedItemsMap.set(item.id, item);
-    for (const item of idbItems) {
-      // Prefer IDB item because it contains full non-truncated photoUrls
+    for (const item of localItems) {
       mergedItemsMap.set(item.id, item);
     }
+    for (const item of idbItems) {
+      const local = mergedItemsMap.get(item.id);
+      const photoUrl = isValidPhotoDataUrl(item.photoUrl)
+        ? item.photoUrl
+        : isValidPhotoDataUrl(local?.photoUrl)
+        ? local?.photoUrl
+        : undefined;
+
+      const photoUrls =
+        item.photoUrls && item.photoUrls.length > 0
+          ? item.photoUrls
+          : local?.photoUrls && local.photoUrls.length > 0
+          ? local.photoUrls
+          : undefined;
+
+      mergedItemsMap.set(item.id, {
+        ...(local || {}),
+        ...item,
+        photoUrl,
+        photoUrls,
+      });
+    }
+
     const finalItems = Array.from(mergedItemsMap.values());
 
-    // Sync back
-    saveStoredBoxes(finalBoxes);
-    saveStoredItems(finalItems);
+    // Ensure persistent storage has the fully reconciled state
+    await saveAllBoxesToIDB(finalBoxes);
+    await saveAllItemsToIDB(finalItems);
 
     return { boxes: finalBoxes, items: finalItems };
   } catch (err) {

@@ -1,6 +1,6 @@
 import React from 'react';
 import { MedicineItem, MedicineBox } from '../types';
-import { checkExpiryStatus, isItemOutOfStock } from '../services/storage';
+import { checkExpiryStatus, isItemOutOfStock, isValidPhotoDataUrl } from '../services/storage';
 import {
   Pill,
   Bandage,
@@ -57,20 +57,32 @@ export const ItemCard: React.FC<ItemCardProps> = ({
       {/* Top row */}
       <div className="flex items-start gap-3">
         {/* Thumbnail */}
-        {item.photoUrl ? (
-          <div className="relative w-16 h-16 rounded-xl overflow-hidden bg-gray-100 border border-gray-200 shrink-0 shadow-2xs">
-            <img src={item.photoUrl} alt={item.name} className="w-full h-full object-cover" />
-            {item.photoUrls && item.photoUrls.length > 1 && (
-              <span className="absolute bottom-0.5 right-0.5 bg-black/75 text-white text-[9px] font-bold px-1 rounded-sm">
-                📷 {item.photoUrls.length}
-              </span>
-            )}
-          </div>
-        ) : (
-          <div className="w-16 h-16 rounded-xl bg-teal-50/70 border border-teal-100 flex items-center justify-center shrink-0">
-            {getCategoryIcon()}
-          </div>
-        )}
+        {(() => {
+          const displayPhoto = isValidPhotoDataUrl(item.photoUrl)
+            ? item.photoUrl
+            : item.photoUrls && item.photoUrls.length > 0 && isValidPhotoDataUrl(item.photoUrls[0])
+            ? item.photoUrls[0]
+            : null;
+
+          if (displayPhoto) {
+            return (
+              <div className="relative w-16 h-16 rounded-xl overflow-hidden bg-gray-100 border border-gray-200 shrink-0 shadow-2xs">
+                <img src={displayPhoto} alt={item.name} className="w-full h-full object-cover" />
+                {item.photoUrls && item.photoUrls.length > 1 && (
+                  <span className="absolute bottom-0.5 right-0.5 bg-black/75 text-white text-[9px] font-bold px-1 rounded-sm">
+                    📷 {item.photoUrls.length}
+                  </span>
+                )}
+              </div>
+            );
+          }
+
+          return (
+            <div className="w-16 h-16 rounded-xl bg-teal-50/70 border border-teal-100 flex items-center justify-center shrink-0">
+              {getCategoryIcon()}
+            </div>
+          );
+        })()}
 
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5 flex-wrap">

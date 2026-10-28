@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { MedicineBox, MedicineItem, ItemCategory } from '../types';
 import { isItemOutOfStock } from '../services/storage';
+import { compressImage } from '../utils/imageCompressor';
 import {
   X,
   Check,
@@ -17,6 +18,7 @@ import {
   Building2,
   Trash2,
   ShoppingCart,
+  Camera,
 } from 'lucide-react';
 
 interface ItemEditModalProps {
@@ -151,6 +153,19 @@ export const ItemEditModal: React.FC<ItemEditModalProps> = ({
     setItemPhotos((prev) => prev.filter((_, i) => i !== index));
   };
 
+  const handleAddPhotos = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    try {
+      const compressedList = await Promise.all(
+        Array.from(files).map((file) => compressImage(file, 960, 960, 0.70))
+      );
+      setItemPhotos((prev) => [...prev, ...compressedList]);
+    } catch (err) {
+      console.error('Error adding photos to item:', err);
+    }
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
@@ -250,19 +265,26 @@ export const ItemEditModal: React.FC<ItemEditModalProps> = ({
             </div>
           )}
 
-          {/* Photos Carousel / Thumbnails if exists */}
-          {itemPhotos.length > 0 && (
-            <div className="p-3 bg-gray-50 rounded-xl border border-gray-200 space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-bold text-teal-800 uppercase tracking-wider flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-teal-500" />
-                  <span>Fotos Vinculadas ({itemPhotos.length})</span>
-                </span>
-                <span className="text-[10px] text-gray-500">
-                  Toca una foto para ampliarla
-                </span>
-              </div>
+          {/* Photos Carousel & Add Photo button */}
+          <div className="p-3 bg-gray-50 rounded-xl border border-gray-200 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold text-teal-800 uppercase tracking-wider flex items-center gap-1.5">
+                <Camera className="w-3.5 h-3.5 text-teal-600" />
+                <span>Fotos del Medicamento ({itemPhotos.length})</span>
+              </span>
+              <label className="cursor-pointer text-[11px] font-bold text-teal-700 hover:text-teal-900 bg-teal-100 hover:bg-teal-200 px-2.5 py-1 rounded-lg transition-colors flex items-center gap-1 shadow-2xs">
+                <span>+ Añadir Foto</span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  onChange={handleAddPhotos}
+                  className="hidden"
+                />
+              </label>
+            </div>
 
+            {itemPhotos.length > 0 ? (
               <div className="flex items-center gap-2.5 overflow-x-auto pb-1 no-scrollbar">
                 {itemPhotos.map((photo, index) => (
                   <div
@@ -294,8 +316,24 @@ export const ItemEditModal: React.FC<ItemEditModalProps> = ({
                   </div>
                 ))}
               </div>
-            </div>
-          )}
+            ) : (
+              <div className="p-3 bg-white border border-dashed border-gray-300 rounded-xl flex items-center justify-between gap-2">
+                <p className="text-[11px] text-gray-500">
+                  Sin fotos registradas. Puedes agregar una foto de la caja, jarabe o blíster.
+                </p>
+                <label className="cursor-pointer text-[11px] font-bold text-teal-700 bg-teal-50 hover:bg-teal-100 border border-teal-200 px-2.5 py-1 rounded-lg transition-colors shrink-0">
+                  <span>Seleccionar Foto</span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    onChange={handleAddPhotos}
+                    className="hidden"
+                  />
+                </label>
+              </div>
+            )}
+          </div>
 
           {/* Classification / Category selector */}
           <div>

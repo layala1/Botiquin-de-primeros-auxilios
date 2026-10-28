@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { MedicineBox, MedicineItem } from '../types';
-import { X, Plus, Trash2, Edit2, Package, Check, AlertTriangle, ArrowRight } from 'lucide-react';
+import { X, Plus, Trash2, Edit2, Package, Check, AlertTriangle } from 'lucide-react';
 
 interface BoxManagerModalProps {
   isOpen: boolean;
@@ -10,18 +10,10 @@ interface BoxManagerModalProps {
   onSaveBox: (box: MedicineBox) => void;
   onDeleteBox: (boxId: string) => void;
   onSelectBox: (boxId: string) => void;
+  initialEditBox?: MedicineBox | null;
 }
 
 const EMOJI_OPTIONS = ['📦', '✈️', '🏠', '🚗', '🎒', '👶', '🧰', '💊', '🩹', '🩺', '⛺', '🏊'];
-const COLOR_OPTIONS = [
-  { name: 'Teal', class: 'bg-teal-500' },
-  { name: 'Azul', class: 'bg-blue-500' },
-  { name: 'Esmeralda', class: 'bg-emerald-500' },
-  { name: 'Ámbar', class: 'bg-amber-500' },
-  { name: 'Rojo', class: 'bg-rose-500' },
-  { name: 'Índigo', class: 'bg-indigo-500' },
-  { name: 'Púrpura', class: 'bg-purple-500' },
-];
 
 export const BoxManagerModal: React.FC<BoxManagerModalProps> = ({
   isOpen,
@@ -31,6 +23,7 @@ export const BoxManagerModal: React.FC<BoxManagerModalProps> = ({
   onSaveBox,
   onDeleteBox,
   onSelectBox,
+  initialEditBox,
 }) => {
   const [editingBox, setEditingBox] = useState<MedicineBox | null>(null);
   const [isCreating, setIsCreating] = useState(false);
@@ -38,16 +31,28 @@ export const BoxManagerModal: React.FC<BoxManagerModalProps> = ({
   const [description, setDescription] = useState('');
   const [icon, setIcon] = useState('📦');
   const [color, setColor] = useState('teal');
-  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [boxPendingDelete, setBoxPendingDelete] = useState<MedicineBox | null>(null);
 
-  React.useEffect(() => {
-    if (isOpen && boxes.length === 0) {
-      setIsCreating(true);
-      setName('');
-      setDescription('');
-      setIcon('✈️');
+  useEffect(() => {
+    if (isOpen) {
+      if (initialEditBox) {
+        setEditingBox(initialEditBox);
+        setName(initialEditBox.name);
+        setDescription(initialEditBox.description || '');
+        setIcon(initialEditBox.icon || '📦');
+        setColor(initialEditBox.color || 'teal');
+        setIsCreating(true);
+      } else if (boxes.length === 0) {
+        setIsCreating(true);
+        setName('');
+        setDescription('');
+        setIcon('✈️');
+      } else {
+        setIsCreating(false);
+        setEditingBox(null);
+      }
     }
-  }, [isOpen, boxes.length]);
+  }, [isOpen, initialEditBox, boxes.length]);
 
   if (!isOpen) return null;
 
@@ -63,7 +68,7 @@ export const BoxManagerModal: React.FC<BoxManagerModalProps> = ({
   const startEdit = (box: MedicineBox) => {
     setEditingBox(box);
     setName(box.name);
-    setDescription(box.description);
+    setDescription(box.description || '');
     setIcon(box.icon || '📦');
     setColor(box.color || 'teal');
     setIsCreating(true);
@@ -86,15 +91,6 @@ export const BoxManagerModal: React.FC<BoxManagerModalProps> = ({
     onSaveBox(newBox);
     setIsCreating(false);
     setEditingBox(null);
-  };
-
-  const handleDelete = (boxId: string) => {
-    if (deleteConfirmId !== boxId) {
-      setDeleteConfirmId(boxId);
-      return;
-    }
-    onDeleteBox(boxId);
-    setDeleteConfirmId(null);
   };
 
   return (
@@ -125,6 +121,7 @@ export const BoxManagerModal: React.FC<BoxManagerModalProps> = ({
             onClick={() => {
               if (isCreating) {
                 setIsCreating(false);
+                setEditingBox(null);
               } else {
                 onClose();
               }
@@ -192,7 +189,10 @@ export const BoxManagerModal: React.FC<BoxManagerModalProps> = ({
               <div className="pt-2 flex gap-2">
                 <button
                   type="button"
-                  onClick={() => setIsCreating(false)}
+                  onClick={() => {
+                    setIsCreating(false);
+                    setEditingBox(null);
+                  }}
                   className="flex-1 py-2.5 px-4 rounded-xl border border-gray-300 text-gray-700 font-medium text-xs hover:bg-gray-50 transition-colors"
                 >
                   Cancelar
@@ -220,7 +220,6 @@ export const BoxManagerModal: React.FC<BoxManagerModalProps> = ({
               <div className="space-y-2.5">
                 {boxes.map((box) => {
                   const boxItems = items.filter((i) => i.boxId === box.id);
-                  const isConfirming = deleteConfirmId === box.id;
 
                   return (
                     <div
@@ -257,12 +256,12 @@ export const BoxManagerModal: React.FC<BoxManagerModalProps> = ({
                           <button
                             onClick={() => startEdit(box)}
                             className="p-2 text-gray-400 hover:text-teal-600 rounded-lg hover:bg-teal-50 transition-colors"
-                            title="Editar nombre"
+                            title="Editar caja"
                           >
                             <Edit2 className="w-4 h-4" />
                           </button>
                           <button
-                            onClick={() => handleDelete(box.id)}
+                            onClick={() => setBoxPendingDelete(box)}
                             className="p-2 text-gray-400 hover:text-rose-600 rounded-lg hover:bg-rose-50 transition-colors"
                             title="Eliminar caja"
                           >
@@ -270,33 +269,6 @@ export const BoxManagerModal: React.FC<BoxManagerModalProps> = ({
                           </button>
                         </div>
                       </div>
-
-                      {/* Confirmation alert if items exist */}
-                      {isConfirming && (
-                        <div className="mt-3 p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-center justify-between gap-2 animate-in fade-in">
-                          <div className="flex items-center gap-1.5">
-                            <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
-                            <span>
-                              Esta caja contiene {boxItems.length} artículos. ¿Seguro que deseas
-                              eliminarla?
-                            </span>
-                          </div>
-                          <div className="flex gap-1.5 shrink-0">
-                            <button
-                              onClick={() => setDeleteConfirmId(null)}
-                              className="px-2 py-1 bg-white border border-gray-300 rounded-lg text-gray-700 font-medium hover:bg-gray-50"
-                            >
-                              No
-                            </button>
-                            <button
-                              onClick={() => handleDelete(box.id)}
-                              className="px-2 py-1 bg-rose-600 text-white rounded-lg font-semibold hover:bg-rose-700"
-                            >
-                              Sí, borrar
-                            </button>
-                          </div>
-                        </div>
-                      )}
                     </div>
                   );
                 })}
@@ -305,6 +277,70 @@ export const BoxManagerModal: React.FC<BoxManagerModalProps> = ({
           )}
         </div>
       </div>
+
+      {/* Explicit Box Deletion Confirmation Modal */}
+      {boxPendingDelete && (
+        <div className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150">
+          <div className="bg-white w-full max-w-sm rounded-2xl shadow-2xl p-5 border border-rose-100 space-y-4">
+            <div className="w-12 h-12 rounded-2xl bg-rose-50 border border-rose-100 text-rose-600 flex items-center justify-center mx-auto text-2xl">
+              <Trash2 className="w-6 h-6" />
+            </div>
+
+            <div className="text-center">
+              <h3 className="text-base font-bold text-gray-900">¿Eliminar esta caja?</h3>
+              <p className="text-xs text-gray-600 mt-1">
+                ¿Seguro que deseas eliminar{' '}
+                <strong className="text-gray-900">
+                  {boxPendingDelete.icon} {boxPendingDelete.name}
+                </strong>
+                ?
+              </p>
+            </div>
+
+            {(() => {
+              const count = items.filter((i) => i.boxId === boxPendingDelete.id).length;
+              return (
+                <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 space-y-1.5">
+                  <p className="font-bold flex items-center gap-1.5 text-amber-800">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                    <span>
+                      {count > 0
+                        ? `Contiene ${count} medicamento${count === 1 ? '' : 's'} o insumos`
+                        : 'Esta caja está actualmente vacía'}
+                    </span>
+                  </p>
+                  <p className="text-[11px] text-amber-700 leading-relaxed">
+                    {count > 0
+                      ? 'Tus medicamentos NO se borrarán. Se trasladarán automáticamente a tu otra caja para que nunca pierdas datos ni fotos.'
+                      : 'Se eliminará la caja sin afectar a las demás.'}
+                  </p>
+                </div>
+              );
+            })()}
+
+            <div className="flex gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setBoxPendingDelete(null)}
+                className="flex-1 py-2.5 px-3 rounded-xl border border-gray-300 text-gray-700 text-xs font-semibold hover:bg-gray-100 transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onDeleteBox(boxPendingDelete.id);
+                  setBoxPendingDelete(null);
+                }}
+                className="flex-1 py-2.5 px-3 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition-colors shadow-sm flex items-center justify-center gap-1.5"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>Sí, eliminar</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
