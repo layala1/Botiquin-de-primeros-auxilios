@@ -1,5 +1,6 @@
 import express from 'express';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { GoogleGenAI, Type } from '@google/genai';
@@ -19,11 +20,16 @@ app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', time: new Date().toISOString() });
 });
 
-// Explicit Service Worker route (required for PWA WebAPK on Android)
+// Explicit Service Worker route (required for PWA WebAPK on Android and 100% offline caching)
 app.get('/sw.js', (_req, res) => {
   res.setHeader('Content-Type', 'application/javascript');
   res.setHeader('Service-Worker-Allowed', '/');
-  res.sendFile(path.resolve(__dirname, 'public', 'sw.js'));
+  const distSw = path.resolve(__dirname, 'dist', 'sw.js');
+  if (fs.existsSync(distSw)) {
+    res.sendFile(distSw);
+  } else {
+    res.sendFile(path.resolve(__dirname, 'public', 'sw.js'));
+  }
 });
 
 // Explicit Manifest routes
@@ -233,21 +239,24 @@ ${userHint ? `Pista o comentario adicional del usuario: "${userHint}"` : ''}
 
 // Setup Vite in Dev or Static files in Prod
 async function startServer() {
-  const isProd = process.env.NODE_ENV === 'production';
+  const distPath = path.resolve(__dirname, 'dist');
+  const distIndex = path.resolve(distPath, 'index.html');
+  const hasDist = fs.existsSync(distIndex);
 
-  if (!isProd) {
+  if (hasDist) {
+    console.log('Serving production PWA build from dist/ (instant cold-start & offline-ready)');
+    app.use(express.static(distPath));
+    app.get('*', (_req, res) => {
+      res.sendFile(distIndex);
+    });
+  } else {
+    console.log('Dist build not found, mounting Vite in middleware mode...');
     const { createServer } = await import('vite');
     const vite = await createServer({
       server: { middlewareMode: true },
       appType: 'spa',
     });
     app.use(vite.middlewares);
-  } else {
-    const distPath = path.resolve(__dirname, 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (_req, res) => {
-      res.sendFile(path.resolve(distPath, 'index.html'));
-    });
   }
 
   app.listen(Number(PORT), '0.0.0.0', () => {
