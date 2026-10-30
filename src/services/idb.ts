@@ -13,7 +13,7 @@ let dbPromise: Promise<IDBDatabase> | null = null;
  * Checks if a string is a genuine, uncorrupted base64 image data URL.
  * Detects and rejects truncated strings (e.g. "..."), empty strings, or non-image data.
  */
-export function isValidPhotoDataUrl(str?: string | null): boolean {
+export function isValidPhotoDataUrl(str?: string | null): str is string {
   if (!str || typeof str !== 'string') return false;
   if (!str.startsWith('data:image/')) return false;
   if (str.endsWith('...')) return false;
@@ -35,7 +35,27 @@ export function openDatabase(): Promise<IDBDatabase> {
       return;
     }
 
+    let isSettled = false;
+    const timeoutId = setTimeout(() => {
+      if (!isSettled) {
+        isSettled = true;
+        console.warn('IndexedDB open timed out after 3.5s, falling back to storage cache');
+        dbPromise = null;
+        reject(new Error('IndexedDB open timeout'));
+      }
+    }, 3500);
+
     const request = window.indexedDB.open(DB_NAME, DB_VERSION);
+
+    request.onblocked = () => {
+      console.warn('IndexedDB upgrade blocked by another connection, unblocking...');
+      if (!isSettled) {
+        isSettled = true;
+        clearTimeout(timeoutId);
+        dbPromise = null;
+        reject(new Error('IndexedDB blocked'));
+      }
+    };
 
     request.onupgradeneeded = (event) => {
       const db = (event.target as IDBOpenDBRequest).result;
@@ -51,6 +71,9 @@ export function openDatabase(): Promise<IDBDatabase> {
     };
 
     request.onsuccess = (event) => {
+      if (isSettled) return;
+      isSettled = true;
+      clearTimeout(timeoutId);
       dbInstance = (event.target as IDBOpenDBRequest).result;
       dbInstance.onversionchange = () => {
         dbInstance?.close();
@@ -61,6 +84,9 @@ export function openDatabase(): Promise<IDBDatabase> {
     };
 
     request.onerror = (event) => {
+      if (isSettled) return;
+      isSettled = true;
+      clearTimeout(timeoutId);
       console.error('Failed to open IndexedDB:', (event.target as IDBOpenDBRequest).error);
       dbPromise = null;
       reject((event.target as IDBOpenDBRequest).error);

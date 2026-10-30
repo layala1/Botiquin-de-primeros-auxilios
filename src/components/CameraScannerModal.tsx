@@ -290,6 +290,11 @@ export const CameraScannerModal: React.FC<CameraScannerModalProps> = ({
     setIsAnalyzing(true);
     setAnalysisError(null);
 
+    // Timeout alert after 6 seconds to reassure user if Cloud Run is cold-starting
+    const coldStartTimer = setTimeout(() => {
+      setAnalysisError('Conectando con el servidor de IA (despertando tras reposo)... Un momento por favor.');
+    }, 6000);
+
     try {
       const response = await fetch('/api/analyze-medicine', {
         method: 'POST',
@@ -299,6 +304,8 @@ export const CameraScannerModal: React.FC<CameraScannerModalProps> = ({
           userHint: userHint.trim() || undefined,
         }),
       });
+
+      clearTimeout(coldStartTimer);
 
       if (!response.ok) {
         const errData = await response.json().catch(() => ({}));
@@ -325,11 +332,16 @@ export const CameraScannerModal: React.FC<CameraScannerModalProps> = ({
       onAnalysisSuccess(data.items, photosToSend, selectedBoxId, data.summary);
       onClose();
     } catch (err: any) {
+      clearTimeout(coldStartTimer);
       console.error('Analysis error:', err);
+      const isNetworkErr = err.name === 'TypeError' || err.message?.includes('Failed to fetch') || err.message?.includes('Network');
       setAnalysisError(
-        err.message || 'Ocurrió un error al analizar las fotos con la IA. Por favor intenta de nuevo.'
+        isNetworkErr
+          ? 'No se pudo conectar con el servidor de análisis (posiblemente esté en reposo o el dispositivo sin internet). Puedes reintentar o ingresar los datos manualmente con el botón "Llenar a mano".'
+          : (err.message || 'Ocurrió un error al analizar las fotos con la IA. Por favor intenta de nuevo.')
       );
     } finally {
+      clearTimeout(coldStartTimer);
       setIsAnalyzing(false);
     }
   };

@@ -63,7 +63,7 @@ export const ItemDetailModal: React.FC<ItemDetailModalProps> = ({
   const allPhotos: string[] = [];
   if (item.photoUrls && item.photoUrls.length > 0) {
     allPhotos.push(...item.photoUrls.filter(isValidPhotoDataUrl));
-  } else if (isValidPhotoDataUrl(item.photoUrl)) {
+  } else if (item.photoUrl && isValidPhotoDataUrl(item.photoUrl)) {
     allPhotos.push(item.photoUrl);
   }
 

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'botiquin-cache-v1';
+const CACHE_NAME = 'botiquin-cache-v2';
 const ASSETS_TO_PRECACHE = [
   '/',
   '/index.html',
@@ -27,6 +27,7 @@ self.addEventListener('activate', (event) => {
       return Promise.all(
         cacheNames.map((name) => {
           if (name !== CACHE_NAME) {
+            console.log('Deleting outdated cache:', name);
             return caches.delete(name);
           }
         })
@@ -36,36 +37,83 @@ self.addEventListener('activate', (event) => {
   self.clients.claim();
 });
 
-// A valid fetch handler is REQUIRED by Chrome/Chromium to trigger WebAPK installation
+// Helper: fetch with timeout so slow/sleeping server doesn't freeze the page
+function fetchWithTimeout(request, timeoutMs = 2000) {
+  return new Promise((resolve, reject) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      controller.abort();
+      reject(new Error('Network timeout'));
+    }, timeoutMs);
+
+    fetch(request, { signal: controller.signal })
+      .then((response) => {
+        clearTimeout(timer);
+        resolve(response);
+      })
+      .catch((err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+  });
+}
+
+// Offline-First and Stale-While-Revalidate Fetch Handler
 self.addEventListener('fetch', (event) => {
-  // Pass through non-GET and API calls directly to network
+  // Pass non-GET and AI API calls directly to live network
   if (event.request.method !== 'GET' || event.request.url.includes('/api/')) {
     return;
   }
 
-  event.respondWith(
-    fetch(event.request)
-      .then((networkResponse) => {
-        // Cache successful responses for offline use
-        if (networkResponse && networkResponse.status === 200) {
-          const responseToCache = networkResponse.clone();
-          caches.open(CACHE_NAME).then((cache) => {
-            cache.put(event.request, responseToCache).catch(() => {});
+  const isNavigation = event.request.mode === 'navigate';
+
+  if (isNavigation) {
+    // For page navigation: try network with quick 2s timeout.
+    // If server is sleeping (Cloud Run scale-to-zero) or offline, serve cached page instantly!
+    event.respondWith(
+      fetchWithTimeout(event.request, 2000)
+        .then((networkResponse) => {
+          if (networkResponse && networkResponse.status === 200) {
+            const clone = networkResponse.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+          }
+          return networkResponse;
+        })
+        .catch(() => {
+          return caches.match(event.request).then((cached) => {
+            if (cached) return cached;
+            return caches.match('/').then((rootCached) => {
+              if (rootCached) return rootCached;
+              return caches.match('/index.html');
+            });
           });
-        }
-        return networkResponse;
-      })
-      .catch(() => {
-        // Fallback to cache if network fails (offline)
-        return caches.match(event.request).then((cachedResponse) => {
-          if (cachedResponse) {
-            return cachedResponse;
+        })
+    );
+    return;
+  }
+
+  // For all scripts, styles, modules, and assets: Stale-While-Revalidate
+  // Return cached asset immediately for zero latency; update cache in background when network is available.
+  event.respondWith(
+    caches.match(event.request).then((cachedResponse) => {
+      const fetchPromise = fetch(event.request)
+        .then((networkResponse) => {
+          if (networkResponse && networkResponse.status === 200) {
+            const clone = networkResponse.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
           }
-          if (event.request.mode === 'navigate') {
-            return caches.match('/');
+          return networkResponse;
+        })
+        .catch((err) => {
+          // If offline and not in cache, let caller handle or return fallback
+          if (!cachedResponse) {
+            console.warn('Network failed and asset not in cache:', event.request.url, err);
           }
-          return new Response('Sin conexión', { status: 503, statusText: 'Offline' });
         });
-      })
+
+      // If already cached, return immediately from local storage (0ms startup on phone!)
+      // If not yet in cache, wait for network
+      return cachedResponse || fetchPromise;
+    })
   );
 });
